@@ -55,7 +55,7 @@ def calc_strat_returns(dff):
 app.layout = html.Div(children=[
     html.Div(
             children=[
-                html.H2(children="Bitcoin Leveraged Trading Backtest Analysis", className='h2-title'),
+                html.H2(children="Bitcoin Leveraged Trading Backtest Analysis - SalasCorp", className='h2-title'),
             ],
             className='study-browser-banner row'
     ),
