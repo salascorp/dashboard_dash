@@ -1,101 +1,343 @@
 import pandas as pd
 import dash
-import dash_html_components as html
 import dash_core_components as dcc
+import dash_html_components as html
 import plotly.graph_objects as go
-import json
-from urllib.request import urlopen
+import dash_table
 from sqlalchemy import create_engine
 
-engine = create_engine('postgresql://postgres:wkNBwQq1VlfFyh7wiPk8@database-ds4a.chmiwxymeztj.us-east-2.rds.amazonaws.com/finalproject')
-dfOcupados = pd.read_sql("SELECT * from ocupatest2", engine.connect())
-dfNameDPTO = pd.read_sql("SELECT * from departamentos2", engine.connect())
+engine = create_engine('postgresql://postgres:wkNBwQq1VlfFyh7wiPk8@database-ds4a.chmiwxymeztj.us-east-2.rds.amazonaws.com/strategy')
+df = pd.read_sql("SELECT * from trades", engine.connect(), parse_dates=('entry_time',))
 
-dfIncomeAverage = dfOcupados[["DPTO","INGLABO"]].groupby("DPTO", as_index=False).mean()
+#df = pd.read_csv('aggr.csv', parse_dates=['Entry time'])
 
-
-dfIncomeAverage2 = pd.merge(dfIncomeAverage, 
-                  dfNameDPTO[['Name_Dpto', 'DPTO', 'DPTO_GRAPH']],
-                  left_on='DPTO',
-                  right_on='DPTO',
-                  how='left')
-
-#Errores a corregir de la tabla ocupados del DANE
-#1. INGLABO eliminar el espacio e blanco
-#2. FEX 2011 solo puede cargar con punto como separador de decimales por restricciones de postgress
-#3. P6810S1 es necesario convertirlas en texto al igual que otras 3 facilmente identificables
-#P6410S1
-#P6430S1
-#P6480S1
-#P6765S1
-#P6780S1
-#P6810S1
-#P6830S1
-#P6880S1
-#P6915S1
-#P6980S1
-#P6980S7A1
-#P7028S1
-#P7140S9A1
-#P7240S1
-#4 Structure for extract information for postgress postgresql://username:password@host/db_name
+app = dash.Dash(__name__, external_stylesheets=['https://codepen.io/uditagarwal/pen/oNvwKNP.css', 'https://codepen.io/uditagarwal/pen/YzKbqyV.css'])
 
 
-token = 'pk.eyJ1IjoibmV3dXNlcmZvcmV2ZXIiLCJhIjoiY2o2M3d1dTZiMGZobzMzbnp2Z2NiN3lmdyJ9.cQFKe3F3ovbfxTsM9E0ZSQ'
 
 
-with urlopen('https://gist.githubusercontent.com/john-guerra/43c7656821069d00dcbc/raw/be6a6e239cd5b5b803c6e7c2ec405b793a9064dd/Colombia.geo.json') as response:
-    counties = json.load(response)
 
+def filter_df(df,exchange, leverage, start_date, end_date):
+    ex = (df['exchange'] == exchange)
+    lev = (df['margin'] == int(leverage))
+    date = ((df['entry_time'] > start_date) & (df['entry_time'] <= end_date))
+    return df[(ex & lev & date)]
 
-for loc in counties['features']:
-    loc['id'] = loc['properties']['NOMBRE_DPT']
-    
+def calc_returns_over_month(dff):
+    out = []
+    dff['YearMonth'] = pd.to_datetime(dff['entry_time'].map(lambda x: x.strftime('%Y-%m')))
 
-app = dash.Dash(__name__, external_stylesheets=['https://codepen.io/uditagarwal/pen/oNvwKNP.css'])
-app.title = "Data Colombia"
+    for name, group in dff.groupby('YearMonth'):
+        exit_balance = group.head(1)['exit_balance'].values[0]
+        entry_balance = group.tail(1)['entry_balance'].values[0]
+        monthly_return = (exit_balance*100 / entry_balance)-100
+        out.append({
+            'month': name,
+            'entry': entry_balance,
+            'exit': exit_balance,
+            'monthly_return': monthly_return
+        })
+    return out
 
+def calc_btc_returns(dff):
+    btc_start_value = dff.tail(1)['btc_price'].values[0]
+    btc_end_value = dff.head(1)['btc_price'].values[0]
+    btc_returns = (btc_end_value * 100/ btc_start_value)-100
+    return btc_returns
+
+def calc_strat_returns(dff):
+    start_value = dff.tail(1)['exit_balance'].values[0]
+    end_value = dff.head(1)['entry_balance'].values[0]
+    returns = (end_value * 100/ start_value)-100
+    return returns
 
 
 app.layout = html.Div(children=[
     html.Div(
-        children=[html.H2(children="Caracteristicas Demograficas Población Colombiana", className='h2-title'),],
-        className='study-browser-banner row'
+            children=[
+                html.H2(children="Bitcoin Leveraged Trading Backtest Analysis", className='h2-title'),
+            ],
+            className='study-browser-banner row'
     ),
     html.Div(
-        className='row app-body', 
+        className="row app-body",
         children=[
-
-        dcc.Graph(
-            id='regional-profit-plot',
-            figure={
-                'data': [ go.Bar(
-                    name='Regional Profit',
-                    x=dfIncomeAverage2["Name_Dpto"],
-                    y=dfIncomeAverage2["INGLABO"]
-                    )],
-            }
+            html.Div(
+                className="twelve columns card",
+                children=[
+                    html.Div(
+                        className="padding row",
+                        children=[
+                            html.Div(
+                                className="two columns card",
+                                children=[
+                                    html.H6("Select Exchange",),
+                                    dcc.RadioItems(
+                                        id="exchange-select",
+                                        options=[
+                                            {'label': label, 'value': label} for label in df['exchange'].unique()
+                                        ],
+                                        value='Bitmex',
+                                        labelStyle={'display': 'inline-block'}
+                                    )
+                                ]
+                            ),
+                            # Leverage Selector
+                            html.Div(
+                                className="two columns card",
+                                children=[
+                                    html.H6("Select Leverage"),
+                                    dcc.RadioItems(
+                                        id="leverage-select",
+                                        options=[
+                                            {'label': str(label), 'value': str(label)} for label in df['margin'].unique()
+                                        ],
+                                        value='1',
+                                        labelStyle={'display': 'inline-block'}
+                                    ),
+                                ]
+                            ),
+                            html.Div(
+                                className="three columns card",
+                                children=[
+                                    html.H6("Select a Date Range"),
+                                    dcc.DatePickerRange(
+                                        id="date-range",
+                                        display_format="MMM YY",
+                                        start_date=df['entry_time'].min(),
+                                        end_date=df['entry_time'].max()
+                                    ),
+                                ]
+                            ),
+                            html.Div(
+                                id="strat-returns-div",
+                                className="two columns indicator pretty_container",
+                                children=[
+                                    html.P(id="strat-returns", className="indicator_value"),
+                                    html.P('Strategy Returns', className="twelve columns indicator_text"),
+                                ]
+                            ),
+                            html.Div(
+                                id="market-returns-div",
+                                className="two columns indicator pretty_container",
+                                children=[
+                                    html.P(id="market-returns", className="indicator_value"),
+                                    html.P('Market Returns', className="twelve columns indicator_text"),
+                                ]
+                            ),
+                            html.Div(
+                                id="strat-vs-market-div",
+                                className="two columns indicator pretty_container",
+                                children=[
+                                    html.P(id="strat-vs-market", className="indicator_value"),
+                                    html.P('Strategy vs. Market Returns', className="twelve columns indicator_text"),
+                                ]
+                            ),
+                        ]
+                )
+        ]),
+        html.Div(
+            className="twelve columns card",
+            children=[
+                dcc.Graph(
+                    id="monthly-chart",
+                    figure={
+                        'data': []
+                    }
+                )
+            ]
         ),
-        
-        dcc.Graph(
-            id='map-plot3',
-            figure={ 
-                'data': [go.Choroplethmapbox(
-                    geojson=counties,
-                    locations=dfIncomeAverage2.Name_Dpto,
-                    z=dfIncomeAverage2.INGLABO,
-                    colorscale='Viridis',
-                    colorbar_title="Ingresos Laborales"
-                )],
-                'layout': go.Layout(
-                        mapbox_style="carto-positron",
-                        mapbox_accesstoken=token,
-                        mapbox_zoom=3,
-                        mapbox_center = {"lat": 4.570868, "lon": -74.2973328}
+        html.Div(
+                className="padding row",
+                children=[
+                    html.Div(
+                        className="six columns card",
+                        children=[
+                            dash_table.DataTable(
+                                id='table',
+                                columns=[
+                                    {'name': 'number', 'id': 'number'},
+                                    {'name': 'trade_type', 'id': 'trade_type'},
+                                    {'name': 'exposure', 'id': 'exposure'},
+                                    {'name': 'entry_balance', 'id': 'entry_balance'},
+                                    {'name': 'exit_balance', 'id': 'exit_balance'},
+                                    {'name': 'pnl_incl_fees', 'id': 'pnl_incl_fees'},
+                                ],
+                                style_cell={'width': '50px'},
+                                style_table={
+                                    'maxHeight': '450px',
+                                    'overflowY': 'scroll'
+                                },
+                            )
+                        ]
+                    ),
+                    dcc.Graph(
+                        id="pnl-types",
+                        className="six columns card",
+                        figure={}
                     )
-            }
-        )
-])])
+                ]
+            ),
+            html.Div(
+                className="padding row",
+                children=[
+                    dcc.Graph(
+                        id="daily-btc",
+                        className="six columns card",
+                        figure={}
+                    ),
+                    dcc.Graph(
+                        id="balance",
+                        className="six columns card",
+                        figure={}
+                    )
+                ]
+            )
+        ]
+    )        
+])
+
+@app.callback(
+    dash.dependencies.Output('balance', 'figure'),
+    (
+        dash.dependencies.Input('exchange-select', 'value'),
+        dash.dependencies.Input('leverage-select', 'value'),
+        dash.dependencies.Input('date-range', 'start_date'),
+        dash.dependencies.Input('date-range', 'end_date'),
+    )
+)
+def update_balance(exchange, leverage, start_date, end_date):
+    dff = filter_df(df, exchange, leverage, start_date, end_date)
+    balance = go.Scatter(x = dff['entry_time'],y = dff['exit_balance'],name = 'balance_overtime')
+    
+    
+    return {
+        'data': [balance],
+        'layout': {'title':'Balance Overtime',
+                   'height':400
+        
+        }
+    }
+
+
+@app.callback(
+    dash.dependencies.Output('daily-btc', 'figure'),
+    (
+        dash.dependencies.Input('exchange-select', 'value'),
+        dash.dependencies.Input('leverage-select', 'value'),
+        dash.dependencies.Input('date-range', 'start_date'),
+        dash.dependencies.Input('date-range', 'end_date'),
+    )
+)
+def update_btc(exchange, leverage, start_date, end_date):
+    dff = filter_df(df, exchange, leverage, start_date, end_date)
+    btc = go.Scatter(x = dff['entry_time'],y = dff['btc_price'],name = 'btc_price')
+    
+    
+    return {
+        'data': [btc],
+        'layout': {'title':'Daily btc price',
+                   'height':400
+        
+        }
+    }
+
+@app.callback(
+    dash.dependencies.Output('pnl-types', 'figure'),
+    (
+        dash.dependencies.Input('exchange-select', 'value'),
+        dash.dependencies.Input('leverage-select', 'value'),
+        dash.dependencies.Input('date-range', 'start_date'),
+        dash.dependencies.Input('date-range', 'end_date'),
+    )
+)
+def update_pnl(exchange, leverage, start_date, end_date):
+    dff = filter_df(df, exchange, leverage, start_date, end_date)
+    dff_long = dff[dff['trade_type']=='Long']
+    dff_short = dff[dff['trade_type'] == 'Short']
+    short = go.Bar(x = dff_short['entry_time'],y = dff_short['pnl_incl_fees'],name='Short')
+    long = go.Bar(x = dff_long['entry_time'],y = dff_long['pnl_incl_fees'],name='Long')
+    
+    return {
+        'data': [short,long],
+        'layout': {'title':'PnL',
+                   'height':400
+        
+        }
+    }
+
+
+@app.callback(
+    dash.dependencies.Output('table', 'data'),
+    (
+        dash.dependencies.Input('exchange-select', 'value'),
+        dash.dependencies.Input('leverage-select', 'value'),
+        dash.dependencies.Input('date-range', 'start_date'),
+        dash.dependencies.Input('date-range', 'end_date'),
+    )
+)
+def update_table(exchange, leverage, start_date, end_date):
+    dff = filter_df(df, exchange, leverage, start_date, end_date)
+    return dff.to_dict('records')
+
+@app.callback(
+    [
+        dash.dependencies.Output('monthly-chart', 'figure'),
+        dash.dependencies.Output('market-returns', 'children'),
+        dash.dependencies.Output('strat-returns', 'children'),
+        dash.dependencies.Output('strat-vs-market', 'children'),
+    ],
+    (
+        dash.dependencies.Input('exchange-select', 'value'),
+        dash.dependencies.Input('leverage-select', 'value'),
+        dash.dependencies.Input('date-range', 'start_date'),
+        dash.dependencies.Input('date-range', 'end_date'),
+
+    )
+)
+def update_monthly(exchange, leverage, start_date, end_date):
+    dff = filter_df(df, exchange, leverage, start_date, end_date)
+    data = calc_returns_over_month(dff)
+    btc_returns = calc_btc_returns(dff)
+    strat_returns = calc_strat_returns(dff)
+    strat_vs_market = strat_returns - btc_returns
+
+    return {
+        'data': [
+            go.Candlestick(
+                open=[each['entry'] for each in data],
+                close=[each['exit'] for each in data],
+                x=[each['month'] for each in data],
+                low=[each['entry'] for each in data],
+                high=[each['exit'] for each in data]
+            )
+        ],
+        'layout': {
+            'title': 'Overview of Monthly performance'
+        }
+    }, f'{btc_returns:0.2f}%', f'{strat_returns:0.2f}%', f'{strat_vs_market:0.2f}%'
+
+@app.callback(
+    dash.dependencies.Output('date-range', 'start_date'),
+    [
+        dash.dependencies.Input('exchange-select', 'value')
+    ]
+)
+def update_date_range (value):
+    df2=df[df['exchange']==value]
+    start_date = df2['entry_time'].min()
+    return start_date
+
+@app.callback(
+    dash.dependencies.Output('date-range', 'end_date'),
+    [
+        dash.dependencies.Input('exchange-select', 'value')
+    ]
+)
+def update_date_range (value):
+    df2=df[df['exchange']==value]
+    end_date = df2['entry_time'].max()
+    return end_date
 
 if __name__ == '__main__':
     app.run_server(debug=True, host= '0.0.0.0')
